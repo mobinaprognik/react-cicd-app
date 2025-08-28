@@ -1,0 +1,58 @@
+stages:
+  - install
+  - build
+  - docker
+  - deploy
+
+# Using shell executor => no Docker image pulls in jobs
+# Make sure your Runner host has Node.js and Docker installed.
+variables:
+  DOCKER_DRIVER: overlay2
+  IMAGE_LATEST: "$CI_REGISTRY_IMAGE:latest"
+  IMAGE_COMMIT: "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA"
+  # Optionally set mirrored base images to avoid DockerHub:
+  BASE_NODE: "$CI_REGISTRY/my-base/node:20-alpine"
+  BASE_NGINX: "$CI_REGISTRY/my-base/nginx:1.27-alpine"
+
+cache:
+  key: ${CI_COMMIT_REF_SLUG}
+  paths:
+    - node_modules/
+
+install:
+  stage: install
+  script:
+    - node -v
+    - npm -v
+    - if [ -f package-lock.json ]; then npm ci; else npm install; fi
+
+build:
+  stage: build
+  script:
+    - npm run build
+    - tar -czf build.tgz dist
+  artifacts:
+    paths:
+      - build.tgz
+    expire_in: 1 week
+
+docker:
+  stage: docker
+  script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+    - docker build --build-arg BASE_NODE=$BASE_NODE --build-arg BASE_NGINX=$BASE_NGINX -t "$IMAGE_COMMIT" -t "$IMAGE_LATEST" .
+    - docker push "$IMAGE_COMMIT"
+    - docker push "$IMAGE_LATEST"
+
+deploy:
+  stage: deploy
+  when: manual
+  script:
+    - |
+      # Example: pull & restart on the deployment host (same Runner or via SSH).
+      CONTAINER_NAME=react-app
+      docker pull "$IMAGE_LATEST"
+      if [ "$(docker ps -q -f name=$CONTAINER_NAME)" ]; then
+        docker rm -f $CONTAINER_NAME
+      fi
+      docker run -d --name $CONTAINER_NAME -p 80:80 "$IMAGE_LATEST"
